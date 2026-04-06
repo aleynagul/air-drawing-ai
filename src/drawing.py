@@ -1,43 +1,71 @@
 import cv2
+from collections import deque
+import numpy as np
 
 class AirDrawer:
-    def __init__(self):
+    def __init__(self, max_history=30):
         self.canvas = None
         self.last_point = None
-        self.thickness = 5
-        self.color = (255, 0, 255)  # default renk (pembe)
+        self.history = deque(maxlen=max_history)
+        self.redo_stack = []
 
-    def initialize_canvas(self, frame):
+    def _initialize_canvas(self, frame):
         if self.canvas is None:
-            self.canvas = frame.copy() * 0  # siyah boş canvas
+            self.canvas = np.zeros_like(frame)
 
-    #önceki nokta ile yeni nokta arasında çizgi çizme
-    def draw(self, frame, point,color, thickness):
-        self.initialize_canvas(frame)
+    def _save_state(self):
+        if self.canvas is not None:
+            self.history.append(self.canvas.copy())
+            self.redo_stack.clear()
 
-        if self.last_point is not None:
-            #normal çizgi çizme
-            cv2.line(self.canvas, self.last_point, point, color, thickness)
-        #yeni noktayı kaydet
-        self.last_point = point
-        #blur efekti
+    def _render(self, frame):
+        """Canvas + glow efektini frame üzerine uygula."""
         glow = cv2.GaussianBlur(self.canvas, (25, 25), 0)
-        
-        output = frame.copy()
-        #birleştirme işlemi
-        output = cv2.addWeighted(output, 1, self.canvas, 1, 0)
+        output = cv2.addWeighted(frame, 1, self.canvas, 1, 0)
         output = cv2.addWeighted(output, 1, glow, 0.5, 0)
-            
-        # canvas + kamera birleşimi
         return output
 
-    def erase(self,frame,point,size=30):
-        self.initialize_canvas(frame)
-        #silme işlemi için büyük bir siyah daire 
-        cv2.circle(self.canvas, point, size, (0,0,0), -1)
-        return cv2.add(frame, self.canvas)
+    def draw(self, frame, point, color, thickness):
+        self._initialize_canvas(frame)
+
+        if self.last_point is not None:
+            self._save_state()
+            cv2.line(self.canvas, self.last_point, point, color, thickness)
+
+        self.last_point = point
+        return self._render(frame)
+
+    def erase(self, frame, point, size=30):
+        self._initialize_canvas(frame)
+        self._save_state()
+        cv2.circle(self.canvas, point, size, (0, 0, 0), -1)
+        return self._render(frame)
+
+    def undo(self):
+        if self.history:
+            self.redo_stack.append(self.canvas.copy())
+            self.canvas = self.history.pop()
+            self.last_point = None
+
+    def redo(self):
+        if self.redo_stack:
+            self.history.append(self.canvas.copy())
+            self.canvas = self.redo_stack.pop()
+            self.last_point = None
 
     def reset(self):
-        self.canvas = None
+        self._save_state()
+        if self.canvas is not None:
+            self.canvas = np.zeros_like(self.canvas)
         self.last_point = None
         
+    def spray(self, frame, point, color, size=30, density=40):
+        self._initialize_canvas(frame)
+        self._save_state()
+        for _ in range(density):
+            angle = np.random.uniform(0, 2 * np.pi)
+            radius = np.random.uniform(0, size)
+            px = int(point[0] + radius * np.cos(angle))
+            py = int(point[1] + radius * np.sin(angle))
+            cv2.circle(self.canvas, (px, py), 1, color, -1)
+        return self._render(frame)
